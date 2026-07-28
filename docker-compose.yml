@@ -1,0 +1,9 @@
+services:
+  suntech-gateway:
+    build: .
+    container_name: suntech-gateway
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "3000:3000"
+      - "7777:7777/tcp"
