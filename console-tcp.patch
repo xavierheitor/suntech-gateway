@@ -1,0 +1,2335 @@
+diff --git a/.env.example b/.env.example
+index 6627324..01195f2 100644
+--- a/.env.example
++++ b/.env.example
+@@ -4,3 +4,4 @@ TCP_HOST=0.0.0.0
+ COMMAND_TERMINATOR=CRLF
+ SOCKET_IDLE_FLUSH_MS=300
+ MAX_MESSAGES=1000
++DATABASE_PATH=./data/gateway.db
+diff --git a/Dockerfile b/Dockerfile
+index 89a6e6e..fe07708 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -12,5 +12,7 @@ ENV NODE_ENV=production
+ COPY package*.json ./
+ RUN npm install --omit=dev
+ COPY --from=build /app/dist ./dist
+-EXPOSE 3000 7777
++COPY public ./public
++RUN mkdir -p /app/data
++EXPOSE 7771 7777
+ CMD ["node", "dist/index.js"]
+diff --git a/README.md b/README.md
+index 050781c..31e6294 100644
+--- a/README.md
++++ b/README.md
+@@ -4,9 +4,23 @@ Gateway de laboratório para rastreadores Suntech ST8310:
+ 
+ - servidor TCP para receber conexões e mensagens do rastreador;
+ - API HTTP para listar conexões/mensagens e enviar comandos;
+-- histórico em memória para depuração inicial.
++- **Console TCP** web com histórico e envio manual em tempo real (WebSocket);
++- persistência SQLite (`TcpConnection` + `TcpMessage`) para auditoria.
+ 
+-> Esta primeira versão é deliberadamente simples. Não use o endpoint de comandos em produção sem autenticação, autorização, persistência e auditoria.
++> Esta versão é deliberadamente simples. Não use o endpoint de comandos em produção sem autenticação, autorização e controles de acesso.
++
++## Arquitetura
++
++O projeto usa Express (não NestJS), organizado em camadas equivalentes:
++
++| Camada | Pasta / classe |
++|--------|----------------|
++| Gateway TCP | `src/tcp/tcp-server.ts` — abre/fecha, framing, encaminha |
++| ConnectionManager | `src/connection/connection.manager.ts` — sockets vivos + envio |
++| Service / Controller | `src/connection/*` |
++| Repository | `src/persistence/*` (SQLite via `node:sqlite`) |
++| EventBus + WebSocket | `src/common/event-bus.ts`, `src/realtime/ws.gateway.ts` |
++| UI | `public/console.html` |
+ 
+ ## 1. Rodar localmente
+ 
+@@ -16,10 +30,12 @@ npm install
+ npm run dev
+ ```
+ 
+-Portas padrão:
++Portas padrão (`.env.example`):
+ 
+ - TCP Suntech: `7777`
+-- HTTP API: `3000`
++- HTTP API + Console: `7771`
++
++Abra o console: http://localhost:7771/console
+ 
+ ## 2. Testar sem o rastreador
+ 
+@@ -39,41 +55,52 @@ STT;1610009909;B9FFFF;201;1.1.11;0;20260727;20:00:00
+ Em outro terminal:
+ 
+ ```bash
+-curl http://localhost:3000/connections
+-curl http://localhost:3000/messages
++curl http://localhost:7771/connections
++curl http://localhost:7771/messages
+ ```
+ 
+-Enviar pedido de posição:
++Envio bruto pelo Console API (sem alterar o texto):
+ 
+ ```bash
+-curl -X POST http://localhost:3000/devices/1610009909/commands \
++curl -X POST http://localhost:7771/connections/<ID>/send \
+   -H 'Content-Type: application/json' \
+-  -d '{"command":"03;01"}'
++  -d '{"text":"CMD;1610009909;03;01","appendTerminator":true}'
+ ```
+ 
+-O gateway enviará:
++Envio legado (monta `CMD;ID;...` e acrescenta terminador):
+ 
+-```text
+-CMD;1610009909;03;01\r\n
++```bash
++curl -X POST http://localhost:7771/devices/1610009909/commands \
++  -H 'Content-Type: application/json' \
++  -d '{"command":"03;01"}'
+ ```
+ 
+-Outros testes úteis:
++## 3. Endpoints
+ 
+-```bash
+-# Versão da aplicação
+-curl -X POST http://localhost:3000/devices/1610009909/commands \
+-  -H 'Content-Type: application/json' \
+-  -d '{"command":"03;04;1"}'
++### Existentes
+ 
+-# Ler parâmetros de rede
+-curl -X POST http://localhost:3000/devices/1610009909/commands \
+-  -H 'Content-Type: application/json' \
+-  -d '{"command":"03;06;0"}'
+-```
++- `GET /health`
++- `GET /connections`
++- `GET /messages?deviceId=...&direction=IN&kind=STT&limit=100`
++- `POST /devices/:deviceId/commands`
++- `POST /connections/:connectionId/commands`
++
++### Console TCP
++
++- `GET /connections/:id` — detalhes
++- `GET /connections/:id/history` — histórico persistido
++- `POST /connections/:id/send` — `{ "text": "...", "appendTerminator": false }`
++- `POST /connections/:id/disconnect` — fecha o socket ativo
++- `WS /ws` — eventos em tempo real:
++  - `connection.created`
++  - `connection.closed`
++  - `connection.updated`
++  - `message.received`
++  - `message.sent`
+ 
+-## 3. Configuração do rastreador
++`POST /send` escreve **exatamente** o conteúdo de `text` no socket já aberto pelo rastreador. Use `"appendTerminator": true` apenas se quiser acrescentar o `COMMAND_TERMINATOR` do `.env`.
+ 
+-Configure no Suntech:
++## 4. Configuração do rastreador
+ 
+ ```text
+ Servidor principal: IP público ou DNS da VPS
+@@ -84,29 +111,7 @@ ZIP: desabilitado (00), inicialmente
+ AES128: desabilitado (00), inicialmente
+ ```
+ 
+-Exemplos de programação documentados:
+-
+-```text
+-PRG;ID;10;05#SEU_DNS_OU_IP
+-PRG;ID;10;06#7777
+-PRG;ID;10;07#00
+-PRG;ID;10;13#0
+-PRG;ID;10;55#00
+-PRG;ID;10;72#00
+-```
+-
+-Substitua `ID` pelo ID real do equipamento.
+-
+-## 4. Publicação em VPS
+-
+-Libere somente o necessário no firewall:
+-
+-```bash
+-sudo ufw allow 7777/tcp
+-sudo ufw allow 3000/tcp
+-```
+-
+-Para laboratório:
++## 5. Docker
+ 
+ ```bash
+ cp .env.example .env
+@@ -114,27 +119,7 @@ docker compose up -d --build
+ docker compose logs -f
+ ```
+ 
+-Em produção, não exponha a porta HTTP 3000 diretamente. Coloque-a atrás do Nginx com HTTPS e autenticação. A porta TCP 7777 precisa continuar acessível ao chip do rastreador.
+-
+-## 5. Endpoints
+-
+-- `GET /health`
+-- `GET /connections`
+-- `GET /messages?deviceId=...&direction=IN&kind=STT&limit=100`
+-- `POST /devices/:deviceId/commands`
+-- `POST /connections/:connectionId/commands`
+-
+-Corpo do comando:
+-
+-```json
+-{ "command": "03;01" }
+-```
+-
+-Também aceita a string completa:
+-
+-```json
+-{ "command": "CMD;1610009909;03;01" }
+-```
++O volume `gateway-data` persiste o SQLite em `/app/data`.
+ 
+ ## 6. Observações sobre enquadramento TCP
+ 
+@@ -143,4 +128,4 @@ TCP não preserva mensagens: uma mensagem pode chegar fragmentada ou várias pod
+ 1. separa mensagens por CRLF, LF ou CR;
+ 2. se não encontrar terminador, processa o buffer após 300 ms sem novos bytes.
+ 
+-Caso o equipamento use outro terminador, ajuste `COMMAND_TERMINATOR` e `SOCKET_IDLE_FLUSH_MS` no `.env` depois de observar o tráfego real.
++Caso o equipamento use outro terminador, ajuste `COMMAND_TERMINATOR` e `SOCKET_IDLE_FLUSH_MS` no `.env`.
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 201024b..5c6debd 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -7,3 +7,8 @@ services:
+     ports:
+       - "7771:7771"
+       - "7777:7777/tcp"
++    volumes:
++      - gateway-data:/app/data
++
++volumes:
++  gateway-data:
+diff --git a/package.json b/package.json
+index 0e245db..a21e003 100644
+--- a/package.json
++++ b/package.json
+@@ -2,7 +2,7 @@
+   "name": "suntech-gateway",
+   "version": "0.1.0",
+   "private": true,
+-  "description": "Gateway TCP + API HTTP para testes com rastreadores Suntech ST8310",
++  "description": "Gateway TCP + API HTTP + Console TCP para testes com rastreadores Suntech ST8310",
+   "scripts": {
+     "dev": "tsx watch src/index.ts",
+     "build": "tsc",
+@@ -11,12 +11,14 @@
+   "dependencies": {
+     "cors": "^2.8.5",
+     "dotenv": "^16.4.7",
+-    "express": "^4.21.2"
++    "express": "^4.21.2",
++    "ws": "^8.21.1"
+   },
+   "devDependencies": {
+     "@types/cors": "^2.8.17",
+     "@types/express": "^5.0.0",
+     "@types/node": "^22.10.2",
++    "@types/ws": "^8.18.1",
+     "tsx": "^4.19.2",
+     "typescript": "^5.7.2"
+   }
+diff --git a/src/http-server.ts b/src/http-server.ts
+deleted file mode 100644
+index 950bb78..0000000
+--- a/src/http-server.ts
++++ /dev/null
+@@ -1,61 +0,0 @@
+-import express from 'express';
+-import cors from 'cors';
+-import { buildCommand } from './protocol';
+-import { GatewayStore } from './store';
+-import { SuntechTcpServer } from './tcp-server';
+-
+-export function createHttpApp(store: GatewayStore, tcp: SuntechTcpServer) {
+-  const app = express();
+-  app.use(cors());
+-  app.use(express.json({ limit: '64kb' }));
+-
+-  app.get('/health', (_req, res) => {
+-    res.json({ ok: true, timestamp: new Date().toISOString() });
+-  });
+-
+-  app.get('/connections', (_req, res) => {
+-    res.json(store.listConnections());
+-  });
+-
+-  app.get('/messages', (req, res) => {
+-    res.json(store.listMessages({
+-      deviceId: req.query.deviceId as string | undefined,
+-      direction: req.query.direction as string | undefined,
+-      kind: req.query.kind as string | undefined,
+-      limit: req.query.limit ? Number(req.query.limit) : undefined,
+-    }));
+-  });
+-
+-  app.post('/devices/:deviceId/commands', async (req, res) => {
+-    try {
+-      const deviceId = req.params.deviceId;
+-      const connection = store.findByDeviceId(deviceId);
+-      if (!connection) return res.status(404).json({ error: 'Dispositivo não está conectado.' });
+-
+-      const input = String(req.body?.command || '');
+-      const command = buildCommand(deviceId, input);
+-      await tcp.send(connection.connectionId, command);
+-      return res.status(202).json({ accepted: true, deviceId, connectionId: connection.connectionId, command });
+-    } catch (error) {
+-      return res.status(400).json({ error: error instanceof Error ? error.message : 'Erro ao enviar comando.' });
+-    }
+-  });
+-
+-  app.post('/connections/:connectionId/commands', async (req, res) => {
+-    try {
+-      const connection = store.getConnection(req.params.connectionId);
+-      if (!connection) return res.status(404).json({ error: 'Conexão não encontrada.' });
+-
+-      const input = String(req.body?.command || '');
+-      const command = connection.deviceId ? buildCommand(connection.deviceId, input) : input.trim();
+-      if (!command) return res.status(400).json({ error: 'Comando vazio.' });
+-
+-      await tcp.send(connection.connectionId, command);
+-      return res.status(202).json({ accepted: true, connectionId: connection.connectionId, command });
+-    } catch (error) {
+-      return res.status(400).json({ error: error instanceof Error ? error.message : 'Erro ao enviar comando.' });
+-    }
+-  });
+-
+-  return app;
+-}
+diff --git a/src/index.ts b/src/index.ts
+index e1a7b7b..2e641d0 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,21 +1,41 @@
+ import 'dotenv/config';
+-import { GatewayStore } from './store';
+-import { SuntechTcpServer } from './tcp-server';
+-import { createHttpApp } from './http-server';
++import { createServer } from 'node:http';
++import { EventBus } from './common/event-bus';
++import { createDatabase } from './persistence/database';
++import { ConnectionRepository } from './persistence/connection.repository';
++import { MessageRepository } from './persistence/message.repository';
++import { ConnectionManager } from './connection/connection.manager';
++import { ConnectionService } from './connection/connection.service';
++import { ConnectionController } from './connection/connection.controller';
++import { SuntechTcpServer } from './tcp/tcp-server';
++import { createHttpApp } from './http/http-server';
++import { RealtimeGateway } from './realtime/ws.gateway';
+ 
+ async function bootstrap(): Promise<void> {
+   const httpPort = Number(process.env.HTTP_PORT || 3000);
+   const tcpPort = Number(process.env.TCP_PORT || 7777);
+   const tcpHost = process.env.TCP_HOST || '0.0.0.0';
+-  const maxMessages = Number(process.env.MAX_MESSAGES || 1000);
+ 
+-  const store = new GatewayStore(maxMessages);
+-  const tcp = new SuntechTcpServer(store, tcpHost, tcpPort);
++  const db = createDatabase(process.env.DATABASE_PATH || './data/gateway.db');
++  const connectionRepo = new ConnectionRepository(db);
++  const messageRepo = new MessageRepository(db);
++  connectionRepo.markAllDisconnected(new Date().toISOString());
++
++  const events = new EventBus();
++  const manager = new ConnectionManager(connectionRepo, messageRepo, events);
++  const service = new ConnectionService(manager);
++  const controller = new ConnectionController(service, manager);
++
++  const tcp = new SuntechTcpServer(manager, tcpHost, tcpPort);
+   await tcp.start();
+ 
+-  const app = createHttpApp(store, tcp);
+-  app.listen(httpPort, '0.0.0.0', () => {
+-    console.log(`[HTTP] API em http://0.0.0.0:${httpPort}`);
++  const app = createHttpApp(controller);
++  const httpServer = createServer(app);
++  new RealtimeGateway(httpServer, events, '/ws');
++
++  httpServer.listen(httpPort, '0.0.0.0', () => {
++    console.log(`[HTTP] API + Console em http://0.0.0.0:${httpPort}`);
++    console.log(`[HTTP] Console TCP: http://0.0.0.0:${httpPort}/console`);
+   });
+ }
+ 
+diff --git a/src/store.ts b/src/store.ts
+deleted file mode 100644
+index d35364e..0000000
+--- a/src/store.ts
++++ /dev/null
+@@ -1,71 +0,0 @@
+-import { randomUUID } from 'node:crypto';
+-import type { DeviceConnection, GatewayMessage } from './types';
+-import { parseFrame } from './protocol';
+-
+-export class GatewayStore {
+-  private readonly connections = new Map<string, DeviceConnection>();
+-  private readonly messages: GatewayMessage[] = [];
+-
+-  constructor(private readonly maxMessages: number) {}
+-
+-  addConnection(connection: DeviceConnection): void {
+-    this.connections.set(connection.connectionId, connection);
+-  }
+-
+-  removeConnection(connectionId: string): void {
+-    const connection = this.connections.get(connectionId);
+-    if (connection?.idleTimer) clearTimeout(connection.idleTimer);
+-    this.connections.delete(connectionId);
+-  }
+-
+-  getConnection(connectionId: string): DeviceConnection | undefined {
+-    return this.connections.get(connectionId);
+-  }
+-
+-  findByDeviceId(deviceId: string): DeviceConnection | undefined {
+-    return [...this.connections.values()].find((item) => item.deviceId === deviceId);
+-  }
+-
+-  identify(connectionId: string, deviceId?: string): void {
+-    if (!deviceId) return;
+-    const connection = this.connections.get(connectionId);
+-    if (connection) connection.deviceId = deviceId;
+-  }
+-
+-  touch(connectionId: string): void {
+-    const connection = this.connections.get(connectionId);
+-    if (connection) connection.lastSeenAt = new Date().toISOString();
+-  }
+-
+-  listConnections() {
+-    return [...this.connections.values()].map(({ socket: _socket, buffer: _buffer, idleTimer: _timer, ...safe }) => safe);
+-  }
+-
+-  addMessage(direction: 'IN' | 'OUT', connectionId: string, raw: string): GatewayMessage {
+-    const parsed = parseFrame(raw);
+-    const connection = this.connections.get(connectionId);
+-    const message: GatewayMessage = {
+-      id: randomUUID(),
+-      direction,
+-      connectionId,
+-      deviceId: parsed.deviceId || connection?.deviceId,
+-      timestamp: new Date().toISOString(),
+-      raw,
+-      kind: parsed.kind,
+-      fields: parsed.fields,
+-    };
+-
+-    this.messages.unshift(message);
+-    if (this.messages.length > this.maxMessages) this.messages.length = this.maxMessages;
+-    return message;
+-  }
+-
+-  listMessages(filters: { deviceId?: string; direction?: string; kind?: string; limit?: number }) {
+-    const limit = Math.min(Math.max(filters.limit || 100, 1), 1000);
+-    return this.messages
+-      .filter((m) => !filters.deviceId || m.deviceId === filters.deviceId)
+-      .filter((m) => !filters.direction || m.direction === filters.direction.toUpperCase())
+-      .filter((m) => !filters.kind || m.kind === filters.kind.toUpperCase())
+-      .slice(0, limit);
+-  }
+-}
+diff --git a/src/tcp-server.ts b/src/tcp-server.ts
+deleted file mode 100644
+index e536218..0000000
+--- a/src/tcp-server.ts
++++ /dev/null
+@@ -1,123 +0,0 @@
+-import net, { type Socket } from 'node:net';
+-import { randomUUID } from 'node:crypto';
+-import { normalizeFrame, parseFrame, terminatorFromEnv } from './protocol';
+-import { GatewayStore } from './store';
+-
+-export class SuntechTcpServer {
+-  private readonly server: net.Server;
+-  private readonly idleFlushMs = Number(process.env.SOCKET_IDLE_FLUSH_MS || 300);
+-  private readonly commandTerminator = terminatorFromEnv(process.env.COMMAND_TERMINATOR);
+-
+-  constructor(
+-    private readonly store: GatewayStore,
+-    private readonly host: string,
+-    private readonly port: number,
+-  ) {
+-    this.server = net.createServer((socket) => this.handleConnection(socket));
+-  }
+-
+-  start(): Promise<void> {
+-    return new Promise((resolve, reject) => {
+-      this.server.once('error', reject);
+-      this.server.listen(this.port, this.host, () => {
+-        this.server.off('error', reject);
+-        console.log(`[TCP] Escutando em ${this.host}:${this.port}`);
+-        resolve();
+-      });
+-    });
+-  }
+-
+-  send(connectionId: string, rawCommand: string): Promise<void> {
+-    const connection = this.store.getConnection(connectionId);
+-    if (!connection) return Promise.reject(new Error('Conexão não encontrada.'));
+-    if (connection.socket.destroyed || !connection.socket.writable) {
+-      return Promise.reject(new Error('Socket não está disponível para escrita.'));
+-    }
+-
+-    const payload = normalizeFrame(rawCommand) + this.commandTerminator;
+-    return new Promise((resolve, reject) => {
+-      connection.socket.write(payload, 'ascii', (error) => {
+-        if (error) return reject(error);
+-        this.store.addMessage('OUT', connectionId, normalizeFrame(rawCommand));
+-        console.log(`[TCP][OUT][${connection.deviceId || connectionId}] ${normalizeFrame(rawCommand)}`);
+-        resolve();
+-      });
+-    });
+-  }
+-
+-  private handleConnection(socket: Socket): void {
+-    socket.setKeepAlive(true, 30_000);
+-    socket.setNoDelay(true);
+-
+-    const connectionId = randomUUID();
+-    const now = new Date().toISOString();
+-    const remoteAddress = socket.remoteAddress || 'unknown';
+-    const remotePort = socket.remotePort || 0;
+-
+-    this.store.addConnection({
+-      connectionId,
+-      remoteAddress,
+-      remotePort,
+-      connectedAt: now,
+-      lastSeenAt: now,
+-      socket,
+-      buffer: '',
+-    });
+-
+-    console.log(`[TCP] Conectado ${connectionId} (${remoteAddress}:${remotePort})`);
+-
+-    socket.on('data', (chunk) => {
+-      const connection = this.store.getConnection(connectionId);
+-      if (!connection) return;
+-
+-      connection.buffer += chunk.toString('ascii');
+-      this.store.touch(connectionId);
+-      this.consumeDelimitedFrames(connectionId);
+-      this.scheduleIdleFlush(connectionId);
+-    });
+-
+-    socket.on('error', (error) => {
+-      console.error(`[TCP] Erro ${connectionId}:`, error.message);
+-    });
+-
+-    socket.on('close', () => {
+-      this.flushBuffer(connectionId);
+-      this.store.removeConnection(connectionId);
+-      console.log(`[TCP] Desconectado ${connectionId}`);
+-    });
+-  }
+-
+-  private consumeDelimitedFrames(connectionId: string): void {
+-    const connection = this.store.getConnection(connectionId);
+-    if (!connection) return;
+-
+-    // Aceita CRLF, LF ou CR. TCP pode juntar vários pacotes no mesmo chunk.
+-    const parts = connection.buffer.split(/\r\n|\n|\r/);
+-    connection.buffer = parts.pop() || '';
+-    for (const part of parts) this.processFrame(connectionId, part);
+-  }
+-
+-  private scheduleIdleFlush(connectionId: string): void {
+-    const connection = this.store.getConnection(connectionId);
+-    if (!connection) return;
+-    if (connection.idleTimer) clearTimeout(connection.idleTimer);
+-    connection.idleTimer = setTimeout(() => this.flushBuffer(connectionId), this.idleFlushMs);
+-  }
+-
+-  private flushBuffer(connectionId: string): void {
+-    const connection = this.store.getConnection(connectionId);
+-    if (!connection || !connection.buffer.trim()) return;
+-    const frame = connection.buffer;
+-    connection.buffer = '';
+-    this.processFrame(connectionId, frame);
+-  }
+-
+-  private processFrame(connectionId: string, raw: string): void {
+-    const frame = normalizeFrame(raw);
+-    if (!frame) return;
+-    const parsed = parseFrame(frame);
+-    this.store.identify(connectionId, parsed.deviceId);
+-    this.store.addMessage('IN', connectionId, frame);
+-    console.log(`[TCP][IN][${parsed.deviceId || connectionId}][${parsed.kind}] ${frame}`);
+-  }
+-}
+diff --git a/src/types.ts b/src/types.ts
+index 84510de..eff778e 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -1,20 +1,64 @@
+ import type { Socket } from 'node:net';
+ 
+-export interface DeviceConnection {
++export type MessageDirection = 'IN' | 'OUT';
++export type ConnectionStatus = 'CONNECTED' | 'DISCONNECTED';
++
++export interface LiveConnection {
+   connectionId: string;
+-  deviceId?: string;
+-  remoteAddress: string;
++  esn?: string;
++  remoteIp: string;
+   remotePort: number;
+   connectedAt: string;
+   lastSeenAt: string;
++  status: 'CONNECTED';
+   socket: Socket;
+   buffer: string;
+   idleTimer?: NodeJS.Timeout;
+ }
+ 
++/** @deprecated Prefer LiveConnection / ConnectionView — mantido para compatibilidade. */
++export type DeviceConnection = LiveConnection & {
++  deviceId?: string;
++  remoteAddress: string;
++};
++
++export interface TcpConnectionRecord {
++  id: string;
++  esn: string | null;
++  remoteIp: string;
++  remotePort: number;
++  connectedAt: string;
++  disconnectedAt: string | null;
++  status: ConnectionStatus;
++}
++
++export interface TcpMessageRecord {
++  id: string;
++  connectionId: string;
++  direction: MessageDirection;
++  protocol: string;
++  rawMessage: string;
++  timestamp: string;
++  esn?: string | null;
++}
++
++export interface ConnectionView {
++  id: string;
++  esn: string | null;
++  remoteIp: string;
++  remotePort: number;
++  connectedAt: string;
++  disconnectedAt: string | null;
++  status: ConnectionStatus;
++  lastSeenAt?: string;
++  lastMessage?: string | null;
++  lastMessageAt?: string | null;
++  connectedForMs?: number;
++}
++
+ export interface GatewayMessage {
+   id: string;
+-  direction: 'IN' | 'OUT';
++  direction: MessageDirection;
+   connectionId: string;
+   deviceId?: string;
+   timestamp: string;
+@@ -22,3 +66,26 @@ export interface GatewayMessage {
+   kind: string;
+   fields: string[];
+ }
++
++export type GatewayEventName =
++  | 'connection.created'
++  | 'connection.closed'
++  | 'connection.updated'
++  | 'message.received'
++  | 'message.sent';
++
++export interface ConnectionEventPayload {
++  connection: ConnectionView;
++}
++
++export interface MessageEventPayload {
++  message: TcpMessageRecord;
++  connection: ConnectionView;
++}
++
++export type SendOptions = {
++  /** Quando true, acrescenta o terminador configurado (COMMAND_TERMINATOR). Default: true para comandos legado; false para /send bruto. */
++  appendTerminator?: boolean;
++  /** Quando true, normaliza trim de CRLF nas bordas. Default: false para /send bruto. */
++  normalize?: boolean;
++};
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..536ea07
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,6 @@
++node_modules/
++dist/
++data/
++.env
++*.log
++.DS_Store
+diff --git a/public/index.html b/public/index.html
+new file mode 100644
+index 0000000..604c38a
+--- /dev/null
++++ b/public/index.html
+@@ -0,0 +1,17 @@
++<!DOCTYPE html>
++<html lang="pt-BR">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1" />
++  <title>Suntech Gateway</title>
++  <link rel="stylesheet" href="/styles.css" />
++</head>
++<body class="page-home">
++  <main class="home">
++    <p class="brand">Suntech Gateway</p>
++    <h1>Laboratório ST8310</h1>
++    <p class="lede">Monitore conexões TCP e envie comandos em tempo real pelo Console TCP.</p>
++    <a class="cta" href="/console">Abrir Console TCP</a>
++  </main>
++</body>
++</html>
+diff --git a/public/console.html b/public/console.html
+new file mode 100644
+index 0000000..e3a920e
+--- /dev/null
++++ b/public/console.html
+@@ -0,0 +1,67 @@
++<!DOCTYPE html>
++<html lang="pt-BR">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1" />
++  <title>Console TCP — Suntech Gateway</title>
++  <link rel="preconnect" href="https://fonts.googleapis.com" />
++  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
++  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
++  <link rel="stylesheet" href="/styles.css" />
++</head>
++<body class="page-console">
++  <div class="app">
++    <aside class="sidebar">
++      <header class="sidebar-head">
++        <a class="brand-link" href="/">Suntech</a>
++        <h1>Conexões</h1>
++        <button type="button" id="btn-refresh-list" class="btn ghost" title="Atualizar lista">↻</button>
++      </header>
++      <div id="connection-list" class="connection-list" aria-live="polite"></div>
++      <footer class="sidebar-foot">
++        <span id="ws-status" class="ws-status offline">WS offline</span>
++      </footer>
++    </aside>
++
++    <section class="console-panel" id="console-panel">
++      <div id="empty-state" class="empty-state">
++        <h2>Console TCP</h2>
++        <p>Selecione uma conexão ativa à esquerda para abrir o terminal.</p>
++      </div>
++
++      <div id="console-view" class="console-view hidden">
++        <header class="console-head">
++          <div class="meta-grid">
++            <div><span class="label">ESN</span><strong id="meta-esn">—</strong></div>
++            <div><span class="label">IP</span><strong id="meta-ip">—</strong></div>
++            <div><span class="label">Porta</span><strong id="meta-port">—</strong></div>
++            <div><span class="label">Tempo</span><strong id="meta-uptime">—</strong></div>
++            <div><span class="label">Status</span><strong id="meta-status">—</strong></div>
++          </div>
++          <div class="head-actions">
++            <button type="button" id="btn-refresh" class="btn">Atualizar</button>
++            <button type="button" id="btn-clear" class="btn ghost">Limpar tela</button>
++            <button type="button" id="btn-disconnect" class="btn danger">Desconectar</button>
++          </div>
++        </header>
++
++        <div id="terminal" class="terminal" aria-label="Histórico TCP"></div>
++
++        <footer class="composer">
++          <label class="composer-label" for="command-input">Digite um comando…</label>
++          <textarea id="command-input" rows="3" spellcheck="false" placeholder="CMD;ESN;03;01"></textarea>
++          <div class="composer-bar">
++            <label class="check">
++              <input type="checkbox" id="append-terminator" />
++              Acrescentar CR/LF
++            </label>
++            <span class="hint">Ctrl+Enter envia exatamente os bytes digitados</span>
++            <button type="button" id="btn-send" class="btn primary">Enviar</button>
++          </div>
++        </footer>
++      </div>
++    </section>
++  </div>
++  <script src="/console.js" type="module"></script>
++</body>
++</html>
+diff --git a/public/console.js b/public/console.js
+new file mode 100644
+index 0000000..6a3c201
+--- /dev/null
++++ b/public/console.js
+@@ -0,0 +1,281 @@
++const listEl = document.getElementById('connection-list');
++const emptyState = document.getElementById('empty-state');
++const consoleView = document.getElementById('console-view');
++const terminal = document.getElementById('terminal');
++const input = document.getElementById('command-input');
++const wsStatus = document.getElementById('ws-status');
++const appendTerminatorEl = document.getElementById('append-terminator');
++
++const meta = {
++  esn: document.getElementById('meta-esn'),
++  ip: document.getElementById('meta-ip'),
++  port: document.getElementById('meta-port'),
++  uptime: document.getElementById('meta-uptime'),
++  status: document.getElementById('meta-status'),
++};
++
++/** @type {Map<string, any>} */
++const connections = new Map();
++/** @type {string | null} */
++let selectedId = null;
++/** IDs limpos apenas na tela local (não apaga histórico no servidor). */
++const clearedLocally = new Set();
++/** @type {Set<string>} */
++const renderedMessageIds = new Set();
++let uptimeTimer = null;
++
++function formatDuration(ms) {
++  if (!Number.isFinite(ms) || ms < 0) return '—';
++  const total = Math.floor(ms / 1000);
++  const h = Math.floor(total / 3600);
++  const m = Math.floor((total % 3600) / 60);
++  const s = total % 60;
++  if (h > 0) return `${h}h ${m}m ${s}s`;
++  if (m > 0) return `${m}m ${s}s`;
++  return `${s}s`;
++}
++
++function formatTime(iso) {
++  try {
++    return new Date(iso).toLocaleTimeString('pt-BR', { hour12: false });
++  } catch {
++    return iso;
++  }
++}
++
++function labelOf(conn) {
++  return conn.esn || conn.id.slice(0, 8);
++}
++
++function isOnline(conn) {
++  return conn.status === 'CONNECTED';
++}
++
++async function api(path, options) {
++  const res = await fetch(path, {
++    headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
++    ...options,
++  });
++  const data = await res.json().catch(() => ({}));
++  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
++  return data;
++}
++
++function upsertConnection(conn) {
++  connections.set(conn.id, conn);
++  renderList();
++  if (selectedId === conn.id) renderMeta(conn);
++}
++
++function renderList() {
++  const items = [...connections.values()].sort((a, b) => {
++    const ao = isOnline(a) ? 0 : 1;
++    const bo = isOnline(b) ? 0 : 1;
++    if (ao !== bo) return ao - bo;
++    return String(b.connectedAt).localeCompare(String(a.connectedAt));
++  });
++
++  if (!items.length) {
++    listEl.innerHTML = `<p class="sub" style="padding:0.75rem;color:var(--muted)">Nenhuma conexão.</p>`;
++    return;
++  }
++
++  listEl.innerHTML = items.map((c) => {
++    const online = isOnline(c);
++    const active = c.id === selectedId ? 'active' : '';
++    const last = c.lastMessage
++      ? escapeHtml(c.lastMessage.length > 42 ? `${c.lastMessage.slice(0, 42)}…` : c.lastMessage)
++      : 'sem mensagens';
++    return `
++      <button type="button" class="conn-item ${active}" data-id="${c.id}">
++        <div class="row">
++          <span class="esn">[${escapeHtml(labelOf(c))}]</span>
++          <span class="badge ${online ? 'online' : 'offline'}">${online ? 'Online' : 'Offline'}</span>
++        </div>
++        <div class="sub">${escapeHtml(c.remoteIp)}:${c.remotePort}<br/>${last}</div>
++      </button>
++    `;
++  }).join('');
++}
++
++function escapeHtml(value) {
++  return String(value)
++    .replaceAll('&', '&amp;')
++    .replaceAll('<', '&lt;')
++    .replaceAll('>', '&gt;')
++    .replaceAll('"', '&quot;');
++}
++
++function renderMeta(conn) {
++  meta.esn.textContent = conn.esn || '—';
++  meta.ip.textContent = conn.remoteIp || '—';
++  meta.port.textContent = String(conn.remotePort ?? '—');
++  meta.status.textContent = isOnline(conn) ? 'Conectado' : 'Desconectado';
++  meta.status.style.color = isOnline(conn) ? 'var(--ok)' : 'var(--offline)';
++  updateUptime(conn);
++  document.getElementById('btn-disconnect').disabled = !isOnline(conn);
++  document.getElementById('btn-send').disabled = !isOnline(conn);
++}
++
++function updateUptime(conn) {
++  if (!conn) {
++    meta.uptime.textContent = '—';
++    return;
++  }
++  const end = isOnline(conn) ? Date.now() : Date.parse(conn.disconnectedAt || conn.connectedAt);
++  const start = Date.parse(conn.connectedAt);
++  meta.uptime.textContent = formatDuration(end - start);
++}
++
++function appendMessage(message, { scroll = true } = {}) {
++  if (!message || renderedMessageIds.has(message.id)) return;
++  if (clearedLocally.has(message.connectionId) && selectedId === message.connectionId) {
++    // após limpar tela, ainda mostramos mensagens novas em tempo real
++  }
++  renderedMessageIds.add(message.id);
++
++  const dir = message.direction === 'OUT' ? 'out' : 'in';
++  const arrow = dir === 'out' ? '->' : '<-';
++  const el = document.createElement('div');
++  el.className = `msg ${dir}`;
++  el.dataset.id = message.id;
++  el.innerHTML = `
++    <span class="time">${escapeHtml(formatTime(message.timestamp))}</span>
++    <span class="dir">${arrow}</span>
++    <span class="body"><span class="proto">${escapeHtml(message.protocol || '')}</span>${escapeHtml(message.rawMessage)}</span>
++  `;
++  terminal.appendChild(el);
++  if (scroll) terminal.scrollTop = terminal.scrollHeight;
++}
++
++function clearScreenLocal() {
++  terminal.innerHTML = '';
++  renderedMessageIds.clear();
++  if (selectedId) clearedLocally.add(selectedId);
++}
++
++async function selectConnection(id) {
++  selectedId = id;
++  clearedLocally.delete(id);
++  renderedMessageIds.clear();
++  terminal.innerHTML = '';
++  emptyState.classList.add('hidden');
++  consoleView.classList.remove('hidden');
++  renderList();
++
++  const detail = await api(`/connections/${id}`);
++  upsertConnection(detail);
++  renderMeta(detail);
++
++  const history = await api(`/connections/${id}/history?limit=1000`);
++  for (const message of history) appendMessage(message, { scroll: false });
++  terminal.scrollTop = terminal.scrollHeight;
++
++  if (uptimeTimer) clearInterval(uptimeTimer);
++  uptimeTimer = setInterval(() => {
++    const conn = connections.get(selectedId);
++    if (conn) updateUptime(conn);
++  }, 1000);
++}
++
++async function refreshList() {
++  const list = await api('/connections?limit=500');
++  connections.clear();
++  for (const conn of list) connections.set(conn.id, conn);
++  renderList();
++  if (selectedId && connections.has(selectedId)) {
++    renderMeta(connections.get(selectedId));
++  }
++}
++
++async function refreshSelected() {
++  if (!selectedId) return;
++  await selectConnection(selectedId);
++}
++
++async function sendCommand() {
++  if (!selectedId) return;
++  const text = input.value;
++  if (!text.length) return;
++
++  const appendTerminator = appendTerminatorEl.checked;
++  await api(`/connections/${selectedId}/send`, {
++    method: 'POST',
++    body: JSON.stringify({ text, appendTerminator }),
++  });
++  // mensagem OUT chega via WebSocket (message.sent); não limpamos o texto digitado
++}
++
++async function disconnectSelected() {
++  if (!selectedId) return;
++  if (!confirm('Desconectar este socket TCP?')) return;
++  await api(`/connections/${selectedId}/disconnect`, { method: 'POST' });
++}
++
++function connectWs() {
++  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
++  const ws = new WebSocket(`${proto}://${location.host}/ws`);
++
++  ws.addEventListener('open', () => {
++    wsStatus.textContent = 'WS online';
++    wsStatus.classList.add('online');
++    wsStatus.classList.remove('offline');
++  });
++
++  ws.addEventListener('close', () => {
++    wsStatus.textContent = 'WS offline — reconectando…';
++    wsStatus.classList.remove('online');
++    wsStatus.classList.add('offline');
++    setTimeout(connectWs, 1500);
++  });
++
++  ws.addEventListener('message', (ev) => {
++    let packet;
++    try { packet = JSON.parse(ev.data); } catch { return; }
++    const { event, payload } = packet;
++
++    if (event === 'connection.created' || event === 'connection.updated' || event === 'connection.closed') {
++      upsertConnection(payload.connection);
++      return;
++    }
++
++    if (event === 'message.received' || event === 'message.sent') {
++      if (payload.connection) upsertConnection(payload.connection);
++      if (selectedId && payload.message?.connectionId === selectedId) {
++        appendMessage(payload.message, { scroll: true });
++      }
++    }
++  });
++}
++
++listEl.addEventListener('click', (ev) => {
++  const btn = ev.target.closest('[data-id]');
++  if (!btn) return;
++  selectConnection(btn.dataset.id).catch((err) => alert(err.message));
++});
++
++document.getElementById('btn-refresh-list').addEventListener('click', () => {
++  refreshList().catch((err) => alert(err.message));
++});
++document.getElementById('btn-refresh').addEventListener('click', () => {
++  refreshSelected().catch((err) => alert(err.message));
++});
++document.getElementById('btn-clear').addEventListener('click', clearScreenLocal);
++document.getElementById('btn-disconnect').addEventListener('click', () => {
++  disconnectSelected().catch((err) => alert(err.message));
++});
++document.getElementById('btn-send').addEventListener('click', () => {
++  sendCommand().catch((err) => alert(err.message));
++});
++
++input.addEventListener('keydown', (ev) => {
++  if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
++    ev.preventDefault();
++    sendCommand().catch((err) => alert(err.message));
++  }
++});
++
++refreshList().catch((err) => {
++  listEl.innerHTML = `<p class="sub" style="padding:0.75rem;color:var(--danger)">${escapeHtml(err.message)}</p>`;
++});
++connectWs();
+diff --git a/public/styles.css b/public/styles.css
+new file mode 100644
+index 0000000..17f3e1f
+--- /dev/null
++++ b/public/styles.css
+@@ -0,0 +1,311 @@
++:root {
++  --bg-0: #0c1210;
++  --bg-1: #121a17;
++  --bg-2: #18221e;
++  --bg-3: #1e2b26;
++  --line: #2a3a33;
++  --text: #d7e6dc;
++  --muted: #7f9688;
++  --accent: #3dba7a;
++  --accent-dim: #2a7a52;
++  --in: #6ec9ff;
++  --out: #f0c674;
++  --danger: #e06c75;
++  --ok: #3dba7a;
++  --offline: #8a7a6a;
++  --font-display: "Syne", sans-serif;
++  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
++  --radius: 10px;
++}
++
++* { box-sizing: border-box; }
++html, body { height: 100%; margin: 0; }
++body {
++  font-family: var(--font-mono);
++  color: var(--text);
++  background:
++    radial-gradient(1200px 600px at 10% -10%, #1a3a2c55, transparent 60%),
++    radial-gradient(900px 500px at 100% 0%, #24352844, transparent 50%),
++    linear-gradient(180deg, var(--bg-0), #0a0f0d 80%);
++}
++
++a { color: var(--accent); text-decoration: none; }
++button, textarea { font: inherit; }
++
++.page-home {
++  display: grid;
++  place-items: center;
++  min-height: 100%;
++  padding: 2rem;
++}
++.home {
++  max-width: 36rem;
++  text-align: left;
++}
++.home .brand {
++  font-family: var(--font-display);
++  font-size: 1.75rem;
++  letter-spacing: -0.03em;
++  margin: 0 0 1.5rem;
++  color: var(--accent);
++}
++.home h1 {
++  font-family: var(--font-display);
++  font-size: clamp(2rem, 5vw, 3rem);
++  letter-spacing: -0.04em;
++  margin: 0 0 0.75rem;
++}
++.lede { color: var(--muted); line-height: 1.5; margin: 0 0 2rem; }
++.cta {
++  display: inline-block;
++  padding: 0.85rem 1.25rem;
++  background: var(--accent);
++  color: #04140c;
++  font-weight: 600;
++  border-radius: 999px;
++}
++
++.app {
++  display: grid;
++  grid-template-columns: minmax(240px, 300px) 1fr;
++  height: 100vh;
++  min-height: 560px;
++}
++
++.sidebar {
++  display: flex;
++  flex-direction: column;
++  border-right: 1px solid var(--line);
++  background: color-mix(in srgb, var(--bg-1) 92%, transparent);
++  backdrop-filter: blur(8px);
++}
++.sidebar-head {
++  display: grid;
++  grid-template-columns: 1fr auto;
++  gap: 0.35rem 0.5rem;
++  padding: 1rem 1rem 0.75rem;
++  border-bottom: 1px solid var(--line);
++  align-items: center;
++}
++.brand-link {
++  grid-column: 1 / -1;
++  font-family: var(--font-display);
++  font-weight: 700;
++  color: var(--accent);
++  letter-spacing: -0.02em;
++}
++.sidebar-head h1 {
++  margin: 0;
++  font-size: 0.85rem;
++  font-weight: 600;
++  text-transform: uppercase;
++  letter-spacing: 0.08em;
++  color: var(--muted);
++}
++.sidebar-foot {
++  padding: 0.75rem 1rem;
++  border-top: 1px solid var(--line);
++}
++.ws-status {
++  font-size: 0.75rem;
++  color: var(--offline);
++}
++.ws-status.online { color: var(--ok); }
++
++.connection-list {
++  flex: 1;
++  overflow: auto;
++  padding: 0.5rem;
++}
++.conn-item {
++  width: 100%;
++  text-align: left;
++  border: 1px solid transparent;
++  background: transparent;
++  color: inherit;
++  border-radius: var(--radius);
++  padding: 0.75rem;
++  cursor: pointer;
++  margin-bottom: 0.35rem;
++}
++.conn-item:hover { background: var(--bg-2); }
++.conn-item.active {
++  background: var(--bg-3);
++  border-color: var(--accent-dim);
++}
++.conn-item .row {
++  display: flex;
++  justify-content: space-between;
++  gap: 0.5rem;
++  align-items: baseline;
++}
++.conn-item .esn {
++  font-weight: 600;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space:nowrap;
++}
++.badge {
++  font-size: 0.68rem;
++  text-transform: uppercase;
++  letter-spacing: 0.06em;
++  padding: 0.15rem 0.4rem;
++  border-radius: 999px;
++  border: 1px solid var(--line);
++}
++.badge.online { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
++.badge.offline { color: var(--offline); }
++.conn-item .sub {
++  margin-top: 0.35rem;
++  font-size: 0.72rem;
++  color: var(--muted);
++  line-height: 1.35;
++}
++
++.console-panel {
++  display: flex;
++  flex-direction: column;
++  min-width: 0;
++  background: linear-gradient(180deg, #0e1512 0%, var(--bg-0) 100%);
++}
++.empty-state {
++  margin: auto;
++  text-align: center;
++  color: var(--muted);
++  padding: 2rem;
++}
++.empty-state h2 {
++  font-family: var(--font-display);
++  color: var(--text);
++  margin: 0 0 0.5rem;
++}
++.console-view {
++  display: flex;
++  flex-direction: column;
++  height: 100%;
++  min-height: 0;
++}
++.console-view.hidden, .hidden { display: none !important; }
++
++.console-head {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 1rem;
++  justify-content: space-between;
++  align-items: flex-end;
++  padding: 0.9rem 1.1rem;
++  border-bottom: 1px solid var(--line);
++  background: color-mix(in srgb, var(--bg-2) 70%, transparent);
++}
++.meta-grid {
++  display: grid;
++  grid-template-columns: repeat(5, minmax(0, auto));
++  gap: 0.75rem 1.25rem;
++}
++.meta-grid .label {
++  display: block;
++  font-size: 0.65rem;
++  text-transform: uppercase;
++  letter-spacing: 0.08em;
++  color: var(--muted);
++  margin-bottom: 0.2rem;
++}
++.meta-grid strong { font-weight: 500; font-size: 0.9rem; }
++.head-actions { display: flex; gap: 0.45rem; flex-wrap: wrap; }
++
++.terminal {
++  flex: 1;
++  overflow: auto;
++  padding: 1rem 1.1rem;
++  font-size: 0.86rem;
++  line-height: 1.55;
++  scroll-behavior: smooth;
++}
++.msg {
++  display: grid;
++  grid-template-columns: 4.6rem 1.6rem 1fr;
++  gap: 0.55rem;
++  margin-bottom: 0.35rem;
++  align-items: start;
++}
++.msg .time { color: var(--muted); font-size: 0.72rem; padding-top: 0.15rem; }
++.msg .dir { font-weight: 600; }
++.msg.in .dir { color: var(--in); }
++.msg.out .dir { color: var(--out); }
++.msg .body {
++  white-space: pre-wrap;
++  word-break: break-all;
++  color: var(--text);
++}
++.msg .proto {
++  color: var(--muted);
++  margin-right: 0.35rem;
++}
++
++.composer {
++  border-top: 1px solid var(--line);
++  padding: 0.85rem 1.1rem 1rem;
++  background: var(--bg-1);
++}
++.composer-label {
++  display: block;
++  font-size: 0.72rem;
++  color: var(--muted);
++  margin-bottom: 0.4rem;
++  text-transform: uppercase;
++  letter-spacing: 0.06em;
++}
++#command-input {
++  width: 100%;
++  resize: vertical;
++  min-height: 4.5rem;
++  background: var(--bg-0);
++  color: var(--text);
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  padding: 0.75rem 0.85rem;
++  outline: none;
++}
++#command-input:focus { border-color: var(--accent-dim); }
++.composer-bar {
++  display: flex;
++  align-items: center;
++  gap: 0.75rem;
++  margin-top: 0.65rem;
++  flex-wrap: wrap;
++}
++.composer-bar .hint { color: var(--muted); font-size: 0.72rem; margin-right: auto; }
++.check {
++  display: inline-flex;
++  align-items: center;
++  gap: 0.4rem;
++  font-size: 0.78rem;
++  color: var(--muted);
++  cursor: pointer;
++}
++
++.btn {
++  border: 1px solid var(--line);
++  background: var(--bg-3);
++  color: var(--text);
++  border-radius: 8px;
++  padding: 0.45rem 0.8rem;
++  cursor: pointer;
++}
++.btn:hover { border-color: var(--muted); }
++.btn.ghost { background: transparent; }
++.btn.primary {
++  background: var(--accent);
++  color: #04140c;
++  border-color: var(--accent);
++  font-weight: 600;
++  margin-left: auto;
++}
++.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); }
++.btn:disabled { opacity: 0.5; cursor: not-allowed; }
++
++@media (max-width: 900px) {
++  .app { grid-template-columns: 1fr; grid-template-rows: 40vh 60vh; }
++  .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
++  .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++}
+diff --git a/src/common/event-bus.ts b/src/common/event-bus.ts
+new file mode 100644
+index 0000000..f1ed660
+--- /dev/null
++++ b/src/common/event-bus.ts
+@@ -0,0 +1,35 @@
++import { EventEmitter } from 'node:events';
++import type {
++  ConnectionEventPayload,
++  GatewayEventName,
++  MessageEventPayload,
++} from '../types';
++
++export type GatewayEventMap = {
++  'connection.created': ConnectionEventPayload;
++  'connection.closed': ConnectionEventPayload;
++  'connection.updated': ConnectionEventPayload;
++  'message.received': MessageEventPayload;
++  'message.sent': MessageEventPayload;
++};
++
++export class EventBus {
++  private readonly emitter = new EventEmitter();
++
++  constructor() {
++    this.emitter.setMaxListeners(0);
++  }
++
++  emit<K extends GatewayEventName>(event: K, payload: GatewayEventMap[K]): void {
++    this.emitter.emit(event, payload);
++  }
++
++  on<K extends GatewayEventName>(event: K, listener: (payload: GatewayEventMap[K]) => void): () => void {
++    this.emitter.on(event, listener);
++    return () => this.emitter.off(event, listener);
++  }
++
++  off<K extends GatewayEventName>(event: K, listener: (payload: GatewayEventMap[K]) => void): void {
++    this.emitter.off(event, listener);
++  }
++}
+diff --git a/src/connection/connection.controller.ts b/src/connection/connection.controller.ts
+new file mode 100644
+index 0000000..c3b853c
+--- /dev/null
++++ b/src/connection/connection.controller.ts
+@@ -0,0 +1,151 @@
++import type { Request, Response, Router } from 'express';
++import { Router as createRouter } from 'express';
++import { buildCommand } from '../protocol';
++import type { ConnectionService } from './connection.service';
++import type { ConnectionManager } from './connection.manager';
++
++function param(value: string | string[]): string {
++  return Array.isArray(value) ? value[0] : value;
++}
++
++export class ConnectionController {
++  readonly router: Router;
++
++  constructor(
++    private readonly service: ConnectionService,
++    private readonly manager: ConnectionManager,
++  ) {
++    this.router = createRouter();
++    this.registerRoutes();
++  }
++
++  private registerRoutes(): void {
++    this.router.get('/connections', (_req, res) => this.list(_req, res));
++    this.router.get('/connections/:id', (req, res) => this.get(req, res));
++    this.router.get('/connections/:id/history', (req, res) => this.history(req, res));
++    this.router.post('/connections/:id/send', (req, res) => void this.send(req, res));
++    this.router.post('/connections/:id/disconnect', (req, res) => this.disconnect(req, res));
++
++    // Legado — mantém comportamento existente
++    this.router.get('/messages', (req, res) => this.listMessages(req, res));
++    this.router.post('/devices/:deviceId/commands', (req, res) => void this.sendByDevice(req, res));
++    this.router.post('/connections/:connectionId/commands', (req, res) => void this.sendLegacyCommand(req, res));
++  }
++
++  private list(_req: Request, res: Response): void {
++    const limit = _req.query.limit ? Number(_req.query.limit) : undefined;
++    res.json(this.service.list(limit));
++  }
++
++  private get(req: Request, res: Response): void {
++    const connection = this.service.get(param(req.params.id));
++    if (!connection) {
++      res.status(404).json({ error: 'Conexão não encontrada.' });
++      return;
++    }
++    res.json(connection);
++  }
++
++  private history(req: Request, res: Response): void {
++    const limit = req.query.limit ? Number(req.query.limit) : 500;
++    const history = this.service.history(param(req.params.id), limit);
++    if (!history) {
++      res.status(404).json({ error: 'Conexão não encontrada.' });
++      return;
++    }
++    res.json(history);
++  }
++
++  private async send(req: Request, res: Response): Promise<void> {
++    try {
++      const id = param(req.params.id);
++      const text = req.body?.text;
++      if (typeof text !== 'string') {
++        res.status(400).json({ error: 'Campo "text" é obrigatório.' });
++        return;
++      }
++
++      const appendTerminator = Boolean(req.body?.appendTerminator);
++      const message = await this.service.sendRaw(id, text, appendTerminator);
++      res.status(202).json({
++        accepted: true,
++        connectionId: id,
++        message,
++      });
++    } catch (error) {
++      const msg = error instanceof Error ? error.message : 'Erro ao enviar.';
++      const status = msg.includes('não encontrada') ? 404 : 400;
++      res.status(status).json({ error: msg });
++    }
++  }
++
++  private disconnect(req: Request, res: Response): void {
++    const id = param(req.params.id);
++    const ok = this.service.disconnect(id);
++    if (!ok) {
++      res.status(404).json({ error: 'Conexão ativa não encontrada.' });
++      return;
++    }
++    res.json({ disconnected: true, connectionId: id });
++  }
++
++  private listMessages(req: Request, res: Response): void {
++    res.json(this.manager.listMessages({
++      deviceId: req.query.deviceId as string | undefined,
++      direction: req.query.direction as string | undefined,
++      kind: req.query.kind as string | undefined,
++      connectionId: req.query.connectionId as string | undefined,
++      limit: req.query.limit ? Number(req.query.limit) : undefined,
++    }));
++  }
++
++  private async sendByDevice(req: Request, res: Response): Promise<void> {
++    try {
++      const deviceId = param(req.params.deviceId);
++      const connection = this.manager.findByDeviceId(deviceId);
++      if (!connection) {
++        res.status(404).json({ error: 'Dispositivo não está conectado.' });
++        return;
++      }
++
++      const input = String(req.body?.command || '');
++      const command = buildCommand(deviceId, input);
++      await this.service.sendCommand(connection.connectionId, command);
++      res.status(202).json({
++        accepted: true,
++        deviceId,
++        connectionId: connection.connectionId,
++        command,
++      });
++    } catch (error) {
++      res.status(400).json({ error: error instanceof Error ? error.message : 'Erro ao enviar comando.' });
++    }
++  }
++
++  private async sendLegacyCommand(req: Request, res: Response): Promise<void> {
++    try {
++      const connectionId = param(req.params.connectionId);
++      const connection = this.manager.getLive(connectionId);
++      if (!connection) {
++        res.status(404).json({ error: 'Conexão não encontrada.' });
++        return;
++      }
++
++      const input = String(req.body?.command || '');
++      const command = connection.esn ? buildCommand(connection.esn, input) : input.trim();
++      if (!command) {
++        res.status(400).json({ error: 'Comando vazio.' });
++        return;
++      }
++
++      await this.service.sendCommand(connection.connectionId, command);
++      res.status(202).json({
++        accepted: true,
++        connectionId: connection.connectionId,
++        command,
++      });
++    } catch (error) {
++      res.status(400).json({ error: error instanceof Error ? error.message : 'Erro ao enviar comando.' });
++    }
++  }
++}
+diff --git a/src/connection/connection.manager.ts b/src/connection/connection.manager.ts
+new file mode 100644
+index 0000000..a5cbf5d
+--- /dev/null
++++ b/src/connection/connection.manager.ts
+@@ -0,0 +1,294 @@
++import { randomUUID } from 'node:crypto';
++import type { Socket } from 'node:net';
++import { normalizeFrame, parseFrame, terminatorFromEnv } from '../protocol';
++import type { EventBus } from '../common/event-bus';
++import type { ConnectionRepository } from '../persistence/connection.repository';
++import type { MessageRepository } from '../persistence/message.repository';
++import type {
++  ConnectionView,
++  LiveConnection,
++  MessageDirection,
++  SendOptions,
++  TcpMessageRecord,
++} from '../types';
++
++export class ConnectionManager {
++  private readonly live = new Map<string, LiveConnection>();
++  private readonly commandTerminator = terminatorFromEnv(process.env.COMMAND_TERMINATOR);
++
++  constructor(
++    private readonly connections: ConnectionRepository,
++    private readonly messages: MessageRepository,
++    private readonly events: EventBus,
++  ) {}
++
++  /** Registra socket vivo + persiste TcpConnection. */
++  open(socket: Socket): LiveConnection {
++    const connectionId = randomUUID();
++    const now = new Date().toISOString();
++    const remoteIp = socket.remoteAddress || 'unknown';
++    const remotePort = socket.remotePort || 0;
++
++    const live: LiveConnection = {
++      connectionId,
++      remoteIp,
++      remotePort,
++      connectedAt: now,
++      lastSeenAt: now,
++      status: 'CONNECTED',
++      socket,
++      buffer: '',
++    };
++
++    this.live.set(connectionId, live);
++    this.connections.insert({
++      id: connectionId,
++      esn: null,
++      remoteIp,
++      remotePort,
++      connectedAt: now,
++      disconnectedAt: null,
++      status: 'CONNECTED',
++    });
++
++    this.events.emit('connection.created', { connection: this.toView(live) });
++    return live;
++  }
++
++  close(connectionId: string): void {
++    const live = this.live.get(connectionId);
++    if (!live) return;
++
++    if (live.idleTimer) clearTimeout(live.idleTimer);
++    this.live.delete(connectionId);
++
++    const disconnectedAt = new Date().toISOString();
++    this.connections.markDisconnected(connectionId, disconnectedAt);
++
++    const view = this.toView({
++      ...live,
++      status: 'CONNECTED',
++    }, { forceStatus: 'DISCONNECTED', disconnectedAt });
++
++    this.events.emit('connection.closed', { connection: view });
++  }
++
++  getLive(connectionId: string): LiveConnection | undefined {
++    return this.live.get(connectionId);
++  }
++
++  /** Compat: retorna conexão viva no formato antigo. */
++  getConnection(connectionId: string): (LiveConnection & { deviceId?: string; remoteAddress: string }) | undefined {
++    const live = this.live.get(connectionId);
++    if (!live) return undefined;
++    return {
++      ...live,
++      deviceId: live.esn,
++      remoteAddress: live.remoteIp,
++    };
++  }
++
++  findByEsn(esn: string): LiveConnection | undefined {
++    return [...this.live.values()].find((item) => item.esn === esn);
++  }
++
++  findByDeviceId(deviceId: string): LiveConnection | undefined {
++    return this.findByEsn(deviceId);
++  }
++
++  identify(connectionId: string, esn?: string): void {
++    if (!esn) return;
++    const live = this.live.get(connectionId);
++    if (!live || live.esn === esn) return;
++
++    live.esn = esn;
++    this.connections.updateEsn(connectionId, esn);
++    this.events.emit('connection.updated', { connection: this.toView(live) });
++  }
++
++  touch(connectionId: string): void {
++    const live = this.live.get(connectionId);
++    if (live) live.lastSeenAt = new Date().toISOString();
++  }
++
++  /**
++   * Envia bytes pela conexão TCP já aberta pelo rastreador.
++   * Por padrão NÃO altera o texto; terminator/normalize são opt-in.
++   */
++  async send(connectionId: string, text: string, options: SendOptions = {}): Promise<TcpMessageRecord> {
++    const live = this.live.get(connectionId);
++    if (!live) throw new Error('Conexão não encontrada.');
++    if (live.socket.destroyed || !live.socket.writable) {
++      throw new Error('Socket não está disponível para escrita.');
++    }
++
++    const appendTerminator = options.appendTerminator ?? false;
++    const shouldNormalize = options.normalize ?? false;
++    const body = shouldNormalize ? normalizeFrame(text) : text;
++    if (body.length === 0 && !appendTerminator) {
++      throw new Error('Payload vazio.');
++    }
++
++    const payload = appendTerminator ? body + this.commandTerminator : body;
++    const auditRaw = shouldNormalize ? body : text;
++
++    await new Promise<void>((resolve, reject) => {
++      live.socket.write(payload, 'ascii', (error) => {
++        if (error) reject(error);
++        else resolve();
++      });
++    });
++
++    const message = this.recordMessage('OUT', connectionId, auditRaw || body);
++    this.events.emit('message.sent', {
++      message,
++      connection: this.toView(live),
++    });
++
++    console.log(`[TCP][OUT][${live.esn || connectionId}] ${auditRaw || body}`);
++    return message;
++  }
++
++  /** Encaminha frame recebido: identifica ESN, persiste e publica evento. */
++  ingestIncoming(connectionId: string, raw: string): TcpMessageRecord | undefined {
++    const frame = normalizeFrame(raw);
++    if (!frame) return undefined;
++
++    const parsed = parseFrame(frame);
++    this.identify(connectionId, parsed.deviceId);
++    const message = this.recordMessage('IN', connectionId, frame);
++    const live = this.live.get(connectionId);
++    if (live) {
++      this.events.emit('message.received', {
++        message,
++        connection: this.toView(live),
++      });
++    }
++    console.log(`[TCP][IN][${parsed.deviceId || connectionId}][${parsed.kind}] ${frame}`);
++    return message;
++  }
++
++  listLiveViews(): ConnectionView[] {
++    return [...this.live.values()].map((live) => this.toView(live));
++  }
++
++  /** Lista persistida (ativas + recentes), enriquecida com dados ao vivo. */
++  listConnections(limit = 200): ConnectionView[] {
++    const records = this.connections.list({ limit });
++    return records.map((record) => {
++      const live = this.live.get(record.id);
++      if (live) return this.toView(live);
++      const latest = this.messages.latestByConnection(record.id);
++      return {
++        id: record.id,
++        esn: record.esn,
++        remoteIp: record.remoteIp,
++        remotePort: record.remotePort,
++        connectedAt: record.connectedAt,
++        disconnectedAt: record.disconnectedAt,
++        status: record.status,
++        lastMessage: latest?.rawMessage ?? null,
++        lastMessageAt: latest?.timestamp ?? null,
++        connectedForMs: elapsedMs(record.connectedAt, record.disconnectedAt || record.connectedAt),
++      };
++    });
++  }
++
++  getConnectionView(id: string): ConnectionView | undefined {
++    const live = this.live.get(id);
++    if (live) return this.toView(live);
++
++    const record = this.connections.findById(id);
++    if (!record) return undefined;
++    const latest = this.messages.latestByConnection(id);
++    return {
++      id: record.id,
++      esn: record.esn,
++      remoteIp: record.remoteIp,
++      remotePort: record.remotePort,
++      connectedAt: record.connectedAt,
++      disconnectedAt: record.disconnectedAt,
++      status: record.status,
++      lastMessage: latest?.rawMessage ?? null,
++      lastMessageAt: latest?.timestamp ?? null,
++      connectedForMs: elapsedMs(record.connectedAt, record.disconnectedAt || new Date().toISOString()),
++    };
++  }
++
++  getHistory(connectionId: string, limit = 500): TcpMessageRecord[] {
++    return this.messages.listByConnection(connectionId, limit);
++  }
++
++  disconnect(connectionId: string): boolean {
++    const live = this.live.get(connectionId);
++    if (!live) return false;
++    live.socket.destroy();
++    return true;
++  }
++
++  /** Compatibilidade com GET /messages legado. */
++  listMessages(filters: {
++    deviceId?: string;
++    direction?: string;
++    kind?: string;
++    connectionId?: string;
++    limit?: number;
++  }) {
++    return this.messages.list(filters).map((m) => ({
++      id: m.id,
++      direction: m.direction,
++      connectionId: m.connectionId,
++      deviceId: m.esn || undefined,
++      timestamp: m.timestamp,
++      raw: m.rawMessage,
++      kind: m.protocol,
++      fields: m.rawMessage.split(';'),
++    }));
++  }
++
++  private recordMessage(direction: MessageDirection, connectionId: string, raw: string): TcpMessageRecord {
++    const parsed = parseFrame(raw);
++    const live = this.live.get(connectionId);
++    const message: TcpMessageRecord = {
++      id: randomUUID(),
++      connectionId,
++      direction,
++      protocol: parsed.kind,
++      rawMessage: raw,
++      timestamp: new Date().toISOString(),
++      esn: parsed.deviceId || live?.esn || null,
++    };
++    this.messages.insert(message);
++    if (live) live.lastSeenAt = message.timestamp;
++    return message;
++  }
++
++  private toView(
++    live: LiveConnection,
++    overrides?: { forceStatus?: 'CONNECTED' | 'DISCONNECTED'; disconnectedAt?: string },
++  ): ConnectionView {
++    const latest = this.messages.latestByConnection(live.connectionId);
++    const status = overrides?.forceStatus || 'CONNECTED';
++    const end = overrides?.disconnectedAt || new Date().toISOString();
++    return {
++      id: live.connectionId,
++      esn: live.esn || null,
++      remoteIp: live.remoteIp,
++      remotePort: live.remotePort,
++      connectedAt: live.connectedAt,
++      disconnectedAt: overrides?.disconnectedAt || null,
++      status,
++      lastSeenAt: live.lastSeenAt,
++      lastMessage: latest?.rawMessage ?? null,
++      lastMessageAt: latest?.timestamp ?? null,
++      connectedForMs: elapsedMs(live.connectedAt, status === 'CONNECTED' ? undefined : end),
++    };
++  }
++}
++
++function elapsedMs(fromIso: string, toIso?: string): number {
++  const from = Date.parse(fromIso);
++  const to = toIso ? Date.parse(toIso) : Date.now();
++  if (Number.isNaN(from) || Number.isNaN(to)) return 0;
++  return Math.max(0, to - from);
++}
+diff --git a/src/connection/connection.service.ts b/src/connection/connection.service.ts
+new file mode 100644
+index 0000000..a41b158
+--- /dev/null
++++ b/src/connection/connection.service.ts
+@@ -0,0 +1,37 @@
++import type { ConnectionManager } from './connection.manager';
++import type { ConnectionView, TcpMessageRecord } from '../types';
++
++export class ConnectionService {
++  constructor(private readonly manager: ConnectionManager) {}
++
++  list(limit?: number): ConnectionView[] {
++    return this.manager.listConnections(limit);
++  }
++
++  get(id: string): ConnectionView | undefined {
++    return this.manager.getConnectionView(id);
++  }
++
++  history(id: string, limit?: number): TcpMessageRecord[] | undefined {
++    if (!this.manager.getConnectionView(id)) return undefined;
++    return this.manager.getHistory(id, limit);
++  }
++
++  async sendRaw(id: string, text: string, appendTerminator = false): Promise<TcpMessageRecord> {
++    return this.manager.send(id, text, {
++      appendTerminator,
++      normalize: false,
++    });
++  }
++
++  async sendCommand(id: string, command: string): Promise<TcpMessageRecord> {
++    return this.manager.send(id, command, {
++      appendTerminator: true,
++      normalize: true,
++    });
++  }
++
++  disconnect(id: string): boolean {
++    return this.manager.disconnect(id);
++  }
++}
+diff --git a/src/http/http-server.ts b/src/http/http-server.ts
+new file mode 100644
+index 0000000..4dc8d83
+--- /dev/null
++++ b/src/http/http-server.ts
+@@ -0,0 +1,29 @@
++import path from 'node:path';
++import express from 'express';
++import cors from 'cors';
++import type { ConnectionController } from '../connection/connection.controller';
++
++export function createHttpApp(controller: ConnectionController) {
++  const app = express();
++  app.use(cors());
++  app.use(express.json({ limit: '64kb' }));
++
++  app.get('/health', (_req, res) => {
++    res.json({ ok: true, timestamp: new Date().toISOString() });
++  });
++
++  app.use(controller.router);
++
++  const publicDir = path.resolve(process.cwd(), 'public');
++  app.use(express.static(publicDir));
++
++  app.get('/', (_req, res) => {
++    res.sendFile(path.join(publicDir, 'index.html'));
++  });
++
++  app.get('/console', (_req, res) => {
++    res.sendFile(path.join(publicDir, 'console.html'));
++  });
++
++  return app;
++}
+diff --git a/src/persistence/connection.repository.ts b/src/persistence/connection.repository.ts
+new file mode 100644
+index 0000000..8dc13a8
+--- /dev/null
++++ b/src/persistence/connection.repository.ts
+@@ -0,0 +1,72 @@
++import type { DatabaseSync } from 'node:sqlite';
++import type { ConnectionStatus, TcpConnectionRecord } from '../types';
++
++export class ConnectionRepository {
++  constructor(private readonly db: DatabaseSync) {}
++
++  insert(record: TcpConnectionRecord): void {
++    this.db.prepare(`
++      INSERT INTO TcpConnection (id, esn, remoteIp, remotePort, connectedAt, disconnectedAt, status)
++      VALUES (?, ?, ?, ?, ?, ?, ?)
++    `).run(
++      record.id,
++      record.esn,
++      record.remoteIp,
++      record.remotePort,
++      record.connectedAt,
++      record.disconnectedAt,
++      record.status,
++    );
++  }
++
++  updateEsn(id: string, esn: string): void {
++    this.db.prepare('UPDATE TcpConnection SET esn = ? WHERE id = ?').run(esn, id);
++  }
++
++  markDisconnected(id: string, disconnectedAt: string): void {
++    this.db.prepare(`
++      UPDATE TcpConnection
++      SET status = 'DISCONNECTED', disconnectedAt = ?
++      WHERE id = ?
++    `).run(disconnectedAt, id);
++  }
++
++  findById(id: string): TcpConnectionRecord | undefined {
++    return this.db.prepare(`
++      SELECT id, esn, remoteIp, remotePort, connectedAt, disconnectedAt, status
++      FROM TcpConnection WHERE id = ?
++    `).get(id) as unknown as TcpConnectionRecord | undefined;
++  }
++
++  list(options: { status?: ConnectionStatus; limit?: number } = {}): TcpConnectionRecord[] {
++    const limit = Math.min(Math.max(options.limit || 200, 1), 1000);
++    if (options.status) {
++      return this.db.prepare(`
++        SELECT id, esn, remoteIp, remotePort, connectedAt, disconnectedAt, status
++        FROM TcpConnection
++        WHERE status = ?
++        ORDER BY connectedAt DESC
++        LIMIT ?
++      `).all(options.status, limit) as unknown as TcpConnectionRecord[];
++    }
++
++    return this.db.prepare(`
++      SELECT id, esn, remoteIp, remotePort, connectedAt, disconnectedAt, status
++      FROM TcpConnection
++      ORDER BY
++        CASE status WHEN 'CONNECTED' THEN 0 ELSE 1 END,
++        connectedAt DESC
++      LIMIT ?
++    `).all(limit) as unknown as TcpConnectionRecord[];
++  }
++
++  /** Marca conexões órfãs CONNECTED como DISCONNECTED (após restart). */
++  markAllDisconnected(disconnectedAt: string): number {
++    const result = this.db.prepare(`
++      UPDATE TcpConnection
++      SET status = 'DISCONNECTED', disconnectedAt = COALESCE(disconnectedAt, ?)
++      WHERE status = 'CONNECTED'
++    `).run(disconnectedAt);
++    return Number(result.changes || 0);
++  }
++}
+diff --git a/src/persistence/database.ts b/src/persistence/database.ts
+new file mode 100644
+index 0000000..cae97d0
+--- /dev/null
++++ b/src/persistence/database.ts
+@@ -0,0 +1,41 @@
++import fs from 'node:fs';
++import path from 'node:path';
++import { DatabaseSync } from 'node:sqlite';
++
++export function createDatabase(dbPath = process.env.DATABASE_PATH || './data/gateway.db'): DatabaseSync {
++  const resolved = path.resolve(dbPath);
++  fs.mkdirSync(path.dirname(resolved), { recursive: true });
++
++  const db = new DatabaseSync(resolved);
++  db.exec('PRAGMA journal_mode = WAL;');
++  db.exec('PRAGMA foreign_keys = ON;');
++  db.exec(`
++    CREATE TABLE IF NOT EXISTS TcpConnection (
++      id TEXT PRIMARY KEY,
++      esn TEXT,
++      remoteIp TEXT NOT NULL,
++      remotePort INTEGER NOT NULL,
++      connectedAt TEXT NOT NULL,
++      disconnectedAt TEXT,
++      status TEXT NOT NULL CHECK (status IN ('CONNECTED', 'DISCONNECTED'))
++    );
++
++    CREATE INDEX IF NOT EXISTS idx_tcp_connection_status ON TcpConnection(status);
++    CREATE INDEX IF NOT EXISTS idx_tcp_connection_esn ON TcpConnection(esn);
++
++    CREATE TABLE IF NOT EXISTS TcpMessage (
++      id TEXT PRIMARY KEY,
++      connectionId TEXT NOT NULL,
++      direction TEXT NOT NULL CHECK (direction IN ('IN', 'OUT')),
++      protocol TEXT NOT NULL,
++      rawMessage TEXT NOT NULL,
++      timestamp TEXT NOT NULL,
++      FOREIGN KEY (connectionId) REFERENCES TcpConnection(id)
++    );
++
++    CREATE INDEX IF NOT EXISTS idx_tcp_message_connection ON TcpMessage(connectionId, timestamp);
++    CREATE INDEX IF NOT EXISTS idx_tcp_message_timestamp ON TcpMessage(timestamp);
++  `);
++
++  return db;
++}
+diff --git a/src/persistence/message.repository.ts b/src/persistence/message.repository.ts
+new file mode 100644
+index 0000000..25c1c8b
+--- /dev/null
++++ b/src/persistence/message.repository.ts
+@@ -0,0 +1,84 @@
++import type { DatabaseSync } from 'node:sqlite';
++import type { MessageDirection, TcpMessageRecord } from '../types';
++
++export class MessageRepository {
++  constructor(private readonly db: DatabaseSync) {}
++
++  insert(record: TcpMessageRecord): void {
++    this.db.prepare(`
++      INSERT INTO TcpMessage (id, connectionId, direction, protocol, rawMessage, timestamp)
++      VALUES (?, ?, ?, ?, ?, ?)
++    `).run(
++      record.id,
++      record.connectionId,
++      record.direction,
++      record.protocol,
++      record.rawMessage,
++      record.timestamp,
++    );
++  }
++
++  listByConnection(connectionId: string, limit = 500): TcpMessageRecord[] {
++    const safeLimit = Math.min(Math.max(limit, 1), 5000);
++    return this.db.prepare(`
++      SELECT m.id, m.connectionId, m.direction, m.protocol, m.rawMessage, m.timestamp, c.esn
++      FROM TcpMessage m
++      LEFT JOIN TcpConnection c ON c.id = m.connectionId
++      WHERE m.connectionId = ?
++      ORDER BY m.timestamp ASC
++      LIMIT ?
++    `).all(connectionId, safeLimit) as unknown as TcpMessageRecord[];
++  }
++
++  list(filters: {
++    deviceId?: string;
++    direction?: string;
++    kind?: string;
++    connectionId?: string;
++    limit?: number;
++  }): TcpMessageRecord[] {
++    const limit = Math.min(Math.max(filters.limit || 100, 1), 1000);
++    const clauses: string[] = [];
++    const params: Array<string | number> = [];
++
++    if (filters.connectionId) {
++      clauses.push('m.connectionId = ?');
++      params.push(filters.connectionId);
++    }
++    if (filters.deviceId) {
++      clauses.push('c.esn = ?');
++      params.push(filters.deviceId);
++    }
++    if (filters.direction) {
++      clauses.push('m.direction = ?');
++      params.push(filters.direction.toUpperCase());
++    }
++    if (filters.kind) {
++      clauses.push('m.protocol = ?');
++      params.push(filters.kind.toUpperCase());
++    }
++
++    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
++    params.push(limit);
++
++    return this.db.prepare(`
++      SELECT m.id, m.connectionId, m.direction, m.protocol, m.rawMessage, m.timestamp, c.esn
++      FROM TcpMessage m
++      LEFT JOIN TcpConnection c ON c.id = m.connectionId
++      ${where}
++      ORDER BY m.timestamp DESC
++      LIMIT ?
++    `).all(...params) as unknown as TcpMessageRecord[];
++  }
++
++  latestByConnection(connectionId: string): TcpMessageRecord | undefined {
++    return this.db.prepare(`
++      SELECT m.id, m.connectionId, m.direction, m.protocol, m.rawMessage, m.timestamp, c.esn
++      FROM TcpMessage m
++      LEFT JOIN TcpConnection c ON c.id = m.connectionId
++      WHERE m.connectionId = ?
++      ORDER BY m.timestamp DESC
++      LIMIT 1
++    `).get(connectionId) as unknown as TcpMessageRecord | undefined;
++  }
++}
+diff --git a/src/realtime/ws.gateway.ts b/src/realtime/ws.gateway.ts
+new file mode 100644
+index 0000000..39b2482
+--- /dev/null
++++ b/src/realtime/ws.gateway.ts
+@@ -0,0 +1,58 @@
++import type { Server as HttpServer } from 'node:http';
++import { WebSocketServer, type WebSocket } from 'ws';
++import type { EventBus } from '../common/event-bus';
++import type { GatewayEventName } from '../types';
++
++const BROADCAST_EVENTS: GatewayEventName[] = [
++  'connection.created',
++  'connection.closed',
++  'connection.updated',
++  'message.received',
++  'message.sent',
++];
++
++/**
++ * Gateway WebSocket: retransmite eventos do EventBus para clientes do Console TCP.
++ */
++export class RealtimeGateway {
++  private readonly wss: WebSocketServer;
++  private readonly unsubscribers: Array<() => void> = [];
++
++  constructor(
++    httpServer: HttpServer,
++    private readonly events: EventBus,
++    path = '/ws',
++  ) {
++    this.wss = new WebSocketServer({ server: httpServer, path });
++    this.wss.on('connection', (socket) => this.onClient(socket));
++    this.bindEvents();
++    console.log(`[WS] WebSocket em ${path}`);
++  }
++
++  private onClient(socket: WebSocket): void {
++    socket.send(JSON.stringify({ event: 'connected', payload: { ok: true, timestamp: new Date().toISOString() } }));
++  }
++
++  private bindEvents(): void {
++    for (const event of BROADCAST_EVENTS) {
++      const unsubscribe = this.events.on(event, (payload) => {
++        this.broadcast(event, payload);
++      });
++      this.unsubscribers.push(unsubscribe);
++    }
++  }
++
++  private broadcast(event: string, payload: unknown): void {
++    const data = JSON.stringify({ event, payload });
++    for (const client of this.wss.clients) {
++      if (client.readyState === client.OPEN) {
++        client.send(data);
++      }
++    }
++  }
++
++  close(): void {
++    for (const unsubscribe of this.unsubscribers) unsubscribe();
++    this.wss.close();
++  }
++}
+diff --git a/src/tcp/tcp-server.ts b/src/tcp/tcp-server.ts
+new file mode 100644
+index 0000000..c122cee
+--- /dev/null
++++ b/src/tcp/tcp-server.ts
+@@ -0,0 +1,84 @@
++import net, { type Socket } from 'node:net';
++import type { ConnectionManager } from '../connection/connection.manager';
++
++/**
++ * Gateway TCP: apenas abre/fecha conexões, faz framing e encaminha ao ConnectionManager.
++ * Não envia comandos diretamente — o envio fica centralizado no ConnectionManager.
++ */
++export class SuntechTcpServer {
++  private readonly server: net.Server;
++  private readonly idleFlushMs = Number(process.env.SOCKET_IDLE_FLUSH_MS || 300);
++
++  constructor(
++    private readonly manager: ConnectionManager,
++    private readonly host: string,
++    private readonly port: number,
++  ) {
++    this.server = net.createServer((socket) => this.handleConnection(socket));
++  }
++
++  start(): Promise<void> {
++    return new Promise((resolve, reject) => {
++      this.server.once('error', reject);
++      this.server.listen(this.port, this.host, () => {
++        this.server.off('error', reject);
++        console.log(`[TCP] Escutando em ${this.host}:${this.port}`);
++        resolve();
++      });
++    });
++  }
++
++  private handleConnection(socket: Socket): void {
++    socket.setKeepAlive(true, 30_000);
++    socket.setNoDelay(true);
++
++    const live = this.manager.open(socket);
++    const connectionId = live.connectionId;
++    console.log(`[TCP] Conectado ${connectionId} (${live.remoteIp}:${live.remotePort})`);
++
++    socket.on('data', (chunk) => {
++      const connection = this.manager.getLive(connectionId);
++      if (!connection) return;
++
++      connection.buffer += chunk.toString('ascii');
++      this.manager.touch(connectionId);
++      this.consumeDelimitedFrames(connectionId);
++      this.scheduleIdleFlush(connectionId);
++    });
++
++    socket.on('error', (error) => {
++      console.error(`[TCP] Erro ${connectionId}:`, error.message);
++    });
++
++    socket.on('close', () => {
++      this.flushBuffer(connectionId);
++      this.manager.close(connectionId);
++      console.log(`[TCP] Desconectado ${connectionId}`);
++    });
++  }
++
++  private consumeDelimitedFrames(connectionId: string): void {
++    const connection = this.manager.getLive(connectionId);
++    if (!connection) return;
++
++    // Aceita CRLF, LF ou CR. TCP pode juntar vários pacotes no mesmo chunk.
++    const parts = connection.buffer.split(/\r\n|\n|\r/);
++    connection.buffer = parts.pop() || '';
++    for (const part of parts) this.manager.ingestIncoming(connectionId, part);
++  }
++
++  private scheduleIdleFlush(connectionId: string): void {
++    const connection = this.manager.getLive(connectionId);
++    if (!connection) return;
++    if (connection.idleTimer) clearTimeout(connection.idleTimer);
++    connection.idleTimer = setTimeout(() => this.flushBuffer(connectionId), this.idleFlushMs);
++  }
++
++  private flushBuffer(connectionId: string): void {
++    const connection = this.manager.getLive(connectionId);
++    if (!connection || !connection.buffer.trim()) return;
++    const frame = connection.buffer;
++    connection.buffer = '';
++    this.manager.ingestIncoming(connectionId, frame);
++  }
++}

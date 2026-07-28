@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Console TCP — Suntech Gateway</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="page-console">
+  <div class="app">
+    <aside class="sidebar">
+      <header class="sidebar-head">
+        <a class="brand-link" href="/">Suntech</a>
+        <h1>Conexões</h1>
+        <button type="button" id="btn-refresh-list" class="btn ghost" title="Atualizar lista">↻</button>
+      </header>
+      <div id="connection-list" class="connection-list" aria-live="polite"></div>
+      <footer class="sidebar-foot">
+        <span id="ws-status" class="ws-status offline">WS offline</span>
+      </footer>
+    </aside>
+
+    <section class="console-panel" id="console-panel">
+      <div id="empty-state" class="empty-state">
+        <h2>Console TCP</h2>
+        <p>Selecione uma conexão ativa à esquerda para abrir o terminal.</p>
+      </div>
+
+      <div id="console-view" class="console-view hidden">
+        <header class="console-head">
+          <div class="meta-grid">
+            <div><span class="label">ESN</span><strong id="meta-esn">—</strong></div>
+            <div><span class="label">IP</span><strong id="meta-ip">—</strong></div>
+            <div><span class="label">Porta</span><strong id="meta-port">—</strong></div>
+            <div><span class="label">Tempo</span><strong id="meta-uptime">—</strong></div>
+            <div><span class="label">Status</span><strong id="meta-status">—</strong></div>
+          </div>
+          <div class="head-actions">
+            <button type="button" id="btn-refresh" class="btn">Atualizar</button>
+            <button type="button" id="btn-clear" class="btn ghost">Limpar tela</button>
+            <button type="button" id="btn-disconnect" class="btn danger">Desconectar</button>
+          </div>
+        </header>
+
+        <div id="terminal" class="terminal" aria-label="Histórico TCP"></div>
+
+        <footer class="composer">
+          <label class="composer-label" for="command-input">Digite um comando…</label>
+          <textarea id="command-input" rows="3" spellcheck="false" placeholder="CMD;ESN;03;01"></textarea>
+          <div class="composer-bar">
+            <label class="check">
+              <input type="checkbox" id="append-terminator" />
+              Acrescentar CR/LF
+            </label>
+            <span class="hint">Ctrl+Enter envia exatamente os bytes digitados</span>
+            <button type="button" id="btn-send" class="btn primary">Enviar</button>
+          </div>
+        </footer>
+      </div>
+    </section>
+  </div>
+  <script src="/console.js" type="module"></script>
+</body>
+</html>

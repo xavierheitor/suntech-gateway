@@ -12,5 +12,7 @@ ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
-EXPOSE 3000 7777
+COPY public ./public
+RUN mkdir -p /app/data
+EXPOSE 7771 7777
 CMD ["node", "dist/index.js"]
