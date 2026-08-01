@@ -35,6 +35,7 @@ Portas padrão (`.env.example`):
 - TCP Suntech: `7777`
 - HTTP API + Console: `7771`
 
+Abra o dispositivo: http://localhost:7771/device  
 Abra o console: http://localhost:7771/console
 
 ## 2. Testar sem o rastreador

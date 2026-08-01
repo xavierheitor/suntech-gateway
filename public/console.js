@@ -163,6 +163,9 @@ async function selectConnection(id) {
   consoleView.classList.remove('hidden');
   renderList();
 
+  const linkDevice = document.getElementById('link-device');
+  if (linkDevice) linkDevice.href = `/device?id=${encodeURIComponent(id)}`;
+
   const detail = await api(`/connections/${id}`);
   upsertConnection(detail);
   renderMeta(detail);
@@ -251,7 +254,8 @@ function connectWs() {
 listEl.addEventListener('click', (ev) => {
   const btn = ev.target.closest('[data-id]');
   if (!btn) return;
-  selectConnection(btn.dataset.id).catch((err) => alert(err.message));
+  // Clique na lista abre a tela Dispositivo; o console continua em /console?id=
+  location.href = `/device?id=${encodeURIComponent(btn.dataset.id)}`;
 });
 
 document.getElementById('btn-refresh-list').addEventListener('click', () => {
@@ -275,7 +279,14 @@ input.addEventListener('keydown', (ev) => {
   }
 });
 
-refreshList().catch((err) => {
-  listEl.innerHTML = `<p class="sub" style="padding:0.75rem;color:var(--danger)">${escapeHtml(err.message)}</p>`;
-});
+const initialId = new URLSearchParams(location.search).get('id');
+
+refreshList()
+  .then(() => {
+    if (initialId) return selectConnection(initialId);
+  })
+  .catch((err) => {
+    listEl.innerHTML = `<p class="sub" style="padding:0.75rem;color:var(--danger)">${escapeHtml(err.message)}</p>`;
+  });
 connectWs();
+

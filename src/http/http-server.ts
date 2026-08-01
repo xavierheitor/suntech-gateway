@@ -25,5 +25,9 @@ export function createHttpApp(controller: ConnectionController) {
     res.sendFile(path.join(publicDir, 'console.html'));
   });
 
+  app.get('/device', (_req, res) => {
+    res.sendFile(path.join(publicDir, 'device.html'));
+  });
+
   return app;
 }

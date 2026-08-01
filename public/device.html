@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dispositivo — Suntech Gateway</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="page-console page-device">
+  <div class="app">
+    <aside class="sidebar">
+      <header class="sidebar-head">
+        <a class="brand-link" href="/">Suntech</a>
+        <h1>Conexões</h1>
+        <button type="button" id="btn-refresh-list" class="btn ghost" title="Atualizar lista">↻</button>
+      </header>
+      <div id="connection-list" class="connection-list" aria-live="polite"></div>
+      <footer class="sidebar-foot">
+        <span id="ws-status" class="ws-status offline">WS offline</span>
+      </footer>
+    </aside>
+
+    <section class="console-panel device-panel">
+      <div id="empty-state" class="empty-state">
+        <h2>Dispositivo</h2>
+        <p>Selecione uma conexão para ver o status e as informações do rastreador.</p>
+      </div>
+
+      <div id="device-view" class="device-view hidden">
+        <header class="device-head">
+          <div>
+            <p class="eyebrow">Dispositivo</p>
+            <h2 id="dev-title">—</h2>
+          </div>
+          <div class="head-actions">
+            <a id="link-console" class="btn" href="/console">Console TCP</a>
+            <button type="button" id="btn-refresh" class="btn ghost">Atualizar</button>
+          </div>
+        </header>
+
+        <section class="info-card">
+          <h3>Conexão</h3>
+          <div class="info-grid">
+            <div><span class="label">ESN</span><strong id="dev-esn">—</strong></div>
+            <div><span class="label">Status</span><strong id="dev-status">—</strong></div>
+            <div><span class="label">IP remoto</span><strong id="dev-ip">—</strong></div>
+            <div><span class="label">Porta</span><strong id="dev-port">—</strong></div>
+            <div><span class="label">Tempo conectado</span><strong id="dev-uptime">—</strong></div>
+            <div><span class="label">Msgs recebidas</span><strong id="dev-in">0</strong></div>
+            <div><span class="label">Msgs enviadas</span><strong id="dev-out">0</strong></div>
+            <div class="span-2"><span class="label">Última mensagem</span><strong id="dev-last" class="mono-wrap">—</strong></div>
+          </div>
+        </section>
+
+        <section class="info-card">
+          <h3>Informações do Rastreador</h3>
+          <p class="card-hint">Atualizado automaticamente a partir de pacotes STT / ALT.</p>
+          <div class="info-grid tracker-grid">
+            <div><span class="label">Tipo</span><strong id="trk-protocol">—</strong></div>
+            <div><span class="label">Data/hora do pacote</span><strong id="trk-timestamp">—</strong></div>
+            <div><span class="label">Latitude</span><strong id="trk-latitude">—</strong></div>
+            <div><span class="label">Longitude</span><strong id="trk-longitude">—</strong></div>
+            <div><span class="label">Velocidade</span><strong id="trk-speed">—</strong></div>
+            <div><span class="label">Direção</span><strong id="trk-heading">—</strong></div>
+            <div><span class="label">Bateria</span><strong id="trk-battery">—</strong></div>
+            <div><span class="label">Satélites</span><strong id="trk-satellites">—</strong></div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+  <script type="module" src="/device.js"></script>
+</body>
+</html>

@@ -1,20 +1,13 @@
-export function normalizeFrame(raw: string): string {
-  return raw.replace(/^[\r\n]+|[\r\n]+$/g, '').trim();
+/**
+ * Interpreta apenas campos principais de STT/ALT.
+ * Espelha src/protocol.ts → parsePacket (versão browser).
+ */
+
+function normalizeFrame(raw) {
+  return String(raw || '').replace(/^[\r\n]+|[\r\n]+$/g, '').trim();
 }
 
-export type ParsedPacket = {
-  protocol: string;
-  esn: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  speed: number | null;
-  heading: number | null;
-  battery: number | null;
-  satellites: number | null;
-  timestamp: string | null;
-};
-
-function emptyParsed(protocol = 'UNKNOWN', esn: string | null = null): ParsedPacket {
+function emptyParsed(protocol = 'UNKNOWN', esn = null) {
   return {
     protocol,
     esn,
@@ -28,25 +21,21 @@ function emptyParsed(protocol = 'UNKNOWN', esn: string | null = null): ParsedPac
   };
 }
 
-function looksLikeDate(value: string): boolean {
+function looksLikeDate(value) {
   return /^\d{8}$/.test(value);
 }
 
-function looksLikeTime(value: string): boolean {
+function looksLikeTime(value) {
   return /^\d{1,2}:\d{2}:\d{2}$/.test(value);
 }
 
-function looksLikeCoordinate(value: string): boolean {
+function looksLikeCoordinate(value) {
   if (!value || !value.includes('.')) return false;
   const n = Number(value);
   return Number.isFinite(n) && Math.abs(n) <= 180;
 }
 
-/**
- * Interpreta apenas campos principais de STT/ALT.
- * Campos ausentes ou não reconhecidos retornam null.
- */
-export function parsePacket(rawMessage: string): ParsedPacket {
+export function parsePacket(rawMessage) {
   const fields = normalizeFrame(rawMessage).split(';');
   const protocol = (fields[0] || 'UNKNOWN').toUpperCase();
   const esn = fields[1] || null;
@@ -68,7 +57,6 @@ export function parsePacket(rawMessage: string): ParsedPacket {
     parsed.timestamp = `${fields[dateIdx]} ${fields[dateIdx + 1]}`;
   }
 
-  // Após data/hora: pula cell/MCC/etc. até achar o par lat;lon
   let i = dateIdx >= 0 ? dateIdx + 2 : 6;
   while (i < fields.length - 1) {
     if (looksLikeCoordinate(fields[i]) && looksLikeCoordinate(fields[i + 1])) {
@@ -92,7 +80,6 @@ export function parsePacket(rawMessage: string): ParsedPacket {
     i += 1;
   }
 
-  // Bateria: costuma aparecer no fim como float ~2.0–5.5 V (backup)
   for (let j = fields.length - 1; j >= 0; j -= 1) {
     const value = fields[j];
     if (!value?.includes('.')) continue;
@@ -103,7 +90,6 @@ export function parsePacket(rawMessage: string): ParsedPacket {
     }
   }
 
-  // Fallback: tensão principal (~6–30 V) ou campo legado no índice 14
   if (parsed.battery == null) {
     for (let j = fields.length - 1; j >= 0; j -= 1) {
       const value = fields[j];
@@ -122,50 +108,4 @@ export function parsePacket(rawMessage: string): ParsedPacket {
   }
 
   return parsed;
-}
-
-export function parseFrame(raw: string): { kind: string; deviceId?: string; fields: string[] } {
-  const normalized = normalizeFrame(raw);
-  const fields = normalized.split(';');
-  const first = fields[0]?.toUpperCase() || 'UNKNOWN';
-
-  // Formatos observados no manual:
-  // STT;ID;...
-  // ALT;ID;...
-  // RES;ID;...
-  // RES;STT;ID;... (resposta ao StatusReq)
-  // RPR;ID;...
-  let deviceId: string | undefined;
-  if (first === 'RES' && fields[1]?.toUpperCase() === 'STT') {
-    deviceId = fields[2];
-  } else if (['STT', 'ALT', 'UEX', 'RES', 'RPR', 'CMD', 'PRG'].includes(first)) {
-    deviceId = fields[1];
-  }
-
-  return { kind: first, deviceId, fields };
-}
-
-export function buildCommand(deviceId: string, command: string): string {
-  const cleaned = command.trim();
-  if (!cleaned) throw new Error('Comando vazio.');
-
-  if (cleaned.includes('{id}')) {
-    return cleaned.replaceAll('{id}', deviceId);
-  }
-
-  if (cleaned.startsWith('CMD;') || cleaned.startsWith('PRG;')) {
-    return cleaned;
-  }
-
-  // Permite enviar apenas "03;01" e gera CMD;ID;03;01
-  return `CMD;${deviceId};${cleaned}`;
-}
-
-export function terminatorFromEnv(value?: string): string {
-  switch ((value || 'CRLF').toUpperCase()) {
-    case 'NONE': return '';
-    case 'LF': return '\n';
-    case 'CR': return '\r';
-    default: return '\r\n';
-  }
 }

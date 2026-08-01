@@ -35,6 +35,7 @@ async function bootstrap(): Promise<void> {
 
   httpServer.listen(httpPort, '0.0.0.0', () => {
     console.log(`[HTTP] API + Console em http://0.0.0.0:${httpPort}`);
+    console.log(`[HTTP] Dispositivo: http://0.0.0.0:${httpPort}/device`);
     console.log(`[HTTP] Console TCP: http://0.0.0.0:${httpPort}/console`);
   });
 }

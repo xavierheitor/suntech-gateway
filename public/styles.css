@@ -64,6 +64,12 @@ button, textarea { font: inherit; }
   font-weight: 600;
   border-radius: 999px;
 }
+.cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.cta-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
 
 .app {
   display: grid;
@@ -308,4 +314,94 @@ button, textarea { font: inherit; }
   .app { grid-template-columns: 1fr; grid-template-rows: 40vh 60vh; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
   .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Dispositivo */
+.device-panel {
+  overflow: auto;
+}
+.device-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.1rem;
+  min-height: 100%;
+}
+.device-view.hidden { display: none !important; }
+.device-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-end;
+}
+.device-head .eyebrow {
+  margin: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.device-head h2 {
+  margin: 0.2rem 0 0;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  letter-spacing: -0.03em;
+}
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  color: var(--text);
+}
+.info-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-2) 80%, transparent);
+  padding: 1rem 1.1rem;
+}
+.info-card h3 {
+  margin: 0 0 0.85rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.card-hint {
+  margin: -0.4rem 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem 1rem;
+}
+.info-grid .label {
+  display: block;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+.info-grid strong {
+  font-weight: 500;
+  font-size: 0.92rem;
+}
+.info-grid .span-2 { grid-column: span 2; }
+.mono-wrap {
+  display: block;
+  word-break: break-all;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+.tracker-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+  .info-grid, .tracker-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .info-grid .span-2 { grid-column: span 2; }
+  .page-device .app { grid-template-rows: 34vh 66vh; }
 }
